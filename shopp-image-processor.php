@@ -2,8 +2,8 @@
 /*
 Plugin Name: Shopp Image Processor
 Plugin URI: http://www.pwd.net.au
-Description: Processes uploaded images into Shopp 1.1.9 format
-Author: Matt
+Description: Processes uploaded images into Shopp 1.1.9 format (Slapped together)
+Author: Matt Boddy
 Version: 0.1
 Last Updated: 13/09/2011
 Author URI: http://www.pwd.net.au
@@ -44,7 +44,7 @@ require_once __DIR__.'/silex.phar';
 			$this->imageDirectory = $upload_dir['path'] . "/shopp_images/";
 		}
 		
-		function GetProductImageMetaById( $ProductId ) {
+		function GetProductImageNamesById( $ProductId ) {
 			$Query = $this['db']->createQueryBuilder();
 		
 			$Query->select("*")
@@ -55,7 +55,15 @@ require_once __DIR__.'/silex.phar';
 				->andwhere("meta.name = 'original'")
 			;
 			
-			return $Query->execute()->fetchAll();
+			$ProductMetas = $Query->execute()->fetchAll();
+			
+			$CurrentProductImageFilenames = array();
+			foreach( $ProductMetas as $ProductImageMeta ) {
+				$MetaArray = unserialize($ProductImageMeta['value']);
+				$CurrentProductImageFilenames[] = $MetaArray->filename; 
+			}
+	
+			return $CurrentProductImageFilenames;
 		}
 		
 		function matchProduct( $UniqueProductIdentifier ) {
@@ -115,7 +123,6 @@ require_once __DIR__.'/silex.phar';
 			return $ImagePaths;
 		}
 		
-		
 		//.. Creates an image object
 		function PrepareImage( $Filename ) {
 			
@@ -141,8 +148,6 @@ require_once __DIR__.'/silex.phar';
 		function addImageToMetaTable( $Attributes ) {
 			$this['db']->insert( "{$this->tablePrefix}shopp_meta", $Attributes);
 		}
-		
-		
 	}
 	
 
@@ -201,19 +206,16 @@ require_once __DIR__.'/silex.phar';
 					'modified'	=> $app->dateTime(),
 				);
 				
-				$CurrentProductImageFilenames = array();
-				foreach( $app->GetProductImageMetaById( $Product['id'] ) as $ProductImageMeta ) {
-					$MetaArray = unserialize($ProductImageMeta['value']);
-					$CurrentProductImageFilenames[] = $MetaArray->filename; 
-				}
-	
-				if( !in_array( $Image->filename, $CurrentProductImageFilenames)) {
+				//.. Make sure an instance of the image doesn't already exist in the meta table
+				if( !in_array( $Image->filename, $app->GetProductImageNamesById( $Product['id'] ) ) ) {
 					$app->addImageToMetaTable($ImageMeta);
 				}
 			}
 		}
 	});
 
+
+	//.. Very Basic route setup. Only run on http://...../processimages/
 	if ( $_SERVER['REQUEST_URI'] == "/processimages/" ) {
 		$app->run();
 	}
