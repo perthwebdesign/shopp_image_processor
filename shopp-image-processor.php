@@ -16,6 +16,9 @@ require_once __DIR__.'/silex.phar';
 	 */
 	class ShoppImageProcessor extends Silex\Application {
 
+		var $ImageKey = "sku--";
+
+
 		var $tablePrefix = null;
 		var $imageDirectory = null;
 		
@@ -41,11 +44,21 @@ require_once __DIR__.'/silex.phar';
 			$this->imageDirectory = $upload_dir['path'] . "/shopp_images/";
 		}
 		
-		function matchProduct( $UniqueProductIdentifier ) {
+		function GetProductImageMetaById( $ProductId ) {
+			$Query = $this['db']->createQueryBuilder();
+		
+			$Query->select("*")
+				->from("{$this->tablePrefix}shopp_meta", "meta")
+				->leftjoin("meta","{$this->tablePrefix}shopp_product","product","product.id = meta.parent")
+				->where("meta.parent = $ProductId")
+				->andwhere("meta.type = 'image'")
+				->andwhere("meta.name = 'original'")
+			;
 			
-			echo "<pre>";
-			var_dump($UniqueProductIdentifier);
-			echo "</pre>";
+			return $Query->execute()->fetchAll();
+		}
+		
+		function matchProduct( $UniqueProductIdentifier ) {
 			
 			$ImageParts = explode("-", $UniqueProductIdentifier);
 			
@@ -95,21 +108,31 @@ require_once __DIR__.'/silex.phar';
 		function fetchUploadedImages() {
 			global $Shopp;
 			
-			$ImagePaths = glob($this->imageDirectory . "[!cache_|!Thumbs]*");
+			$ImagePaths = glob($this->imageDirectory . "{$this->ImageKey}*");
 			$ImagePaths = str_replace("{$this->imageDirectory}", "", $ImagePaths);
 			
 			//.. return images that don't have cache_ in the filename
 			return $ImagePaths;
 		}
 		
-		function getImageDetails( $ImagePath ) {
+		
+		//.. Creates an image object
+		function PrepareImage( $Filename ) {
 			
-			$ImageDetails = getimagesize( $ImagePath );
-			$Image = array(
-				'width'		=> strval( $ImageDetails[0] ),
-				'height'	=> strval( $ImageDetails[1] ),
+			//.. try to determine the SKU to match image to
+			preg_match("/sku--([A-z0-9]*)?/", $Filename, $Matches);
+			$sku = $Matches[1];
+			
+			$ImageAttributes = getimagesize( $this->imageDirectory . $Filename );
+			
+			$Image = (object) array(
+				'sku' 		=> $sku,
+				'filename'	=> $Filename,
+				'path'		=> $this->imageDirectory . $Filename,
+				'width'		=> strval( $ImageAttributes[0] ),
+				'height'	=> strval( $ImageAttributes[1] ),
 				'mime'		=> $ImageDetails['mime'],
-				'filesize'	=> strval( filesize( $ImagePath ) ),
+				'filesize'	=> strval( filesize( $this->imageDirectory . $Filename ) ),
 			);
 			
 			return $Image;
@@ -142,52 +165,53 @@ require_once __DIR__.'/silex.phar';
 	
 	$app->match('/processimages/', function () use ($app) {
 		
-		$MatchCount = 1;
 		foreach( $app->fetchUploadedImages() as $FileName ) {
-			preg_match("/(.*)\..*$/", $FileName, $Matches);
 			
-			$ImageName = $Matches[1];
+			//.. new image object (from filesystem)
+			$Image = $app->PrepareImage( $FileName );
 			
-			$MatchedProduct = $app->matchProduct( $ImageName );
+			//.. new product array (from database)
+			$Product = $app->matchProduct( $Image->sku );
 			
-			if( $MatchedProduct) {
-				
-				$ImageDetails = $app->getImageDetails( $app->imageDirectory . $FileName );
+			//.. if a product is found. Prepare image to be inserted into the meta table 
+			if( $Product) {
 				
 				$ImageObject = (object) array(
-					"mime"		=> $ImageDetails['mime'],
-					"size"		=> $ImageDetails['filesize'],	
+					"mime"		=> $Image->mime,
+					"size"		=> $Image->filesize,	
 					"storage"	=> "FSStorage",
 					"uri"		=> $FileName,
 					"filename"	=> $FileName,
-					"width"		=> $ImageDetails['width'],
-					"height"	=> $ImageDetails['height'],
+					"width"		=> $Image->width,
+					"height"	=> $Image->height,
 					"alt"		=> "",
 					"title"		=> "",
 					"settings"	=> "",
 				);
 				
 				$ImageMeta = array(
-						'parent'	=> $MatchedProduct['id'],
-						'context'	=> 'product',
-						'type'		=> 'image',
-						'name'		=> 'original',
-						'value'		=> serialize( $ImageObject ),
-						'numeral'	=> 0,
-						'sortorder'	=> 0,
-						'created'	=> $app->dateTime(),
-						'modified'	=> $app->dateTime(),
+					'parent'	=> $Product['id'],
+					'context'	=> 'product',
+					'type'		=> 'image',
+					'name'		=> 'original',
+					'value'		=> serialize( $ImageObject ),
+					'numeral'	=> 0,
+					'sortorder'	=> 0,
+					'created'	=> $app->dateTime(),
+					'modified'	=> $app->dateTime(),
 				);
 				
-				if( !$app->checkImageInMetaTable( $MatchedProduct['id'] ) ) {
-					$app->addImageToMetaTable($ImageMeta);
-					
+				$CurrentProductImageFilenames = array();
+				foreach( $app->GetProductImageMetaById( $Product['id'] ) as $ProductImageMeta ) {
+					$MetaArray = unserialize($ProductImageMeta['value']);
+					$CurrentProductImageFilenames[] = $MetaArray->filename; 
 				}
-			
+	
+				if( !in_array( $Image->filename, $CurrentProductImageFilenames)) {
+					$app->addImageToMetaTable($ImageMeta);
+				}
 			}
-			$MatchCount = $MatchCount + 1;
 		}
-		echo $MatchCount;
 	});
 
 	if ( $_SERVER['REQUEST_URI'] == "/processimages/" ) {
