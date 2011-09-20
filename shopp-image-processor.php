@@ -16,7 +16,7 @@ require_once __DIR__.'/silex.phar';
 	 */
 	class ShoppImageProcessor extends Silex\Application {
 
-		var $ImageKey = "sku--";
+		var $ImageKey = "sku_";
 
 
 		var $tablePrefix = null;
@@ -68,8 +68,7 @@ require_once __DIR__.'/silex.phar';
 		
 		function matchProduct( $UniqueProductIdentifier ) {
 			
-			$ImageParts = explode("-", $UniqueProductIdentifier);
-			
+			$ImageParts = explode("_", $UniqueProductIdentifier);
 			$Sku = $ImageParts[0];
 			$ImageNumber = $ImageParts[1];
 			
@@ -79,11 +78,13 @@ require_once __DIR__.'/silex.phar';
 				->from("{$this->tablePrefix}shopp_meta", "meta")
 				->leftjoin("meta","{$this->tablePrefix}shopp_product","product","product.id = meta.parent")
 				->where("meta.name = 'sku'")
-				->andwhere("meta.value = '$Sku'")
+				->andwhere("meta.value LIKE '%{$Sku}%'")
 			;
 			
 			$Product = $Query->execute()->fetch();
 
+			echo "$Sku <br />";
+			
 			if( count( $Product ) > 0 ) {
 				return $Product;
 			} else {
@@ -124,22 +125,19 @@ require_once __DIR__.'/silex.phar';
 		}
 		
 		//.. Creates an image object
-		function PrepareImage( $Filename ) {
+		function PrepareImage( $Filepath ) {
 			
-			//.. try to determine the SKU to match image to
-			preg_match("/sku--([A-z0-9]*)?/", $Filename, $Matches);
-			$sku = $Matches[1];
+			$ImageAttributes = getimagesize( $Filepath );
 			
-			$ImageAttributes = getimagesize( $this->imageDirectory . $Filename );
+			$Filename = str_replace($this->imageDirectory, "", $Filepath);
 			
 			$Image = (object) array(
-				'sku' 		=> $sku,
 				'filename'	=> $Filename,
-				'path'		=> $this->imageDirectory . $Filename,
+				'path'		=> $Filepath,
 				'width'		=> strval( $ImageAttributes[0] ),
 				'height'	=> strval( $ImageAttributes[1] ),
-				'mime'		=> $ImageDetails['mime'],
-				'filesize'	=> strval( filesize( $this->imageDirectory . $Filename ) ),
+				'mime'		=> $ImageAttributes['mime'],
+				'filesize'	=> strval( filesize( $Filepath ) ),
 			);
 			
 			return $Image;
@@ -148,6 +146,38 @@ require_once __DIR__.'/silex.phar';
 		function addImageToMetaTable( $Attributes ) {
 			$this['db']->insert( "{$this->tablePrefix}shopp_meta", $Attributes);
 		}
+		
+		
+		
+		function GetAllProduct() {
+			$Query = $this['db']->createQueryBuilder();
+			$Query->select("*")
+				->from("{$this->tablePrefix}shopp_product", "product")
+			;
+			
+			return $Query->execute()->fetchAll();
+		}
+		
+		function GetProductMeta( $productID ) {
+			$Query = $this['db']->createQueryBuilder();
+			$Query->select("*")
+				->from("{$this->tablePrefix}shopp_meta", "meta")
+				->where("meta.parent = '{$productID}'")
+			;
+				
+			return $Query->execute()->fetchAll();
+		}
+		function GetProductMetaSku( $productID ) {
+			$Query = $this['db']->createQueryBuilder();
+			$Query->select("*")
+				->from("{$this->tablePrefix}shopp_meta", "meta")
+				->where("meta.parent = '{$productID}'")
+				->andwhere("meta.name = 'sku'")
+			;
+			$ProductMeta = $Query->execute()->fetch();
+			return $ProductMeta['value'];
+		}
+		
 	}
 	
 
@@ -170,23 +200,39 @@ require_once __DIR__.'/silex.phar';
 	
 	$app->match('/processimages/', function () use ($app) {
 		
-		foreach( $app->fetchUploadedImages() as $FileName ) {
+		//.. fetch all the uploaded images.
+		$Images = $app->fetchUploadedImages();
+		
+		//.. get all products.
+		foreach( $app->GetAllProduct() as $Product ) {
 			
-			//.. new image object (from filesystem)
-			$Image = $app->PrepareImage( $FileName );
+			//.. Grab product sku.
+			$FullProductSku = $app->GetProductMetaSku( $Product['id'] );
+			$ProductSku = explode("-", $FullProductSku);
+			$ProductSku = $ProductSku[0];
 			
-			//.. new product array (from database)
-			$Product = $app->matchProduct( $Image->sku );
+			echo "<h1>This is the Full Product SKU $FullProductSku</h1>";
+			echo "<h2>This is the small Product SKU $ProductSku</h2>";
 			
-			//.. if a product is found. Prepare image to be inserted into the meta table 
-			if( $Product) {
+			//.. INITIAL CHECK
+			$ImagePathMatches = glob($app->imageDirectory . "sku_{$FullProductSku}*");
+			if( count( $ImagePathMatches ) == 0 ) {
+				//.. SECONDARY CHECK
+				$ImagePathMatches = glob($app->imageDirectory . "sku_{$ProductSku}*");
+			}
+			
+			//.. Flip array so the straight product sku matches are added first.
+			$ImagePathMatches = array_reverse($ImagePathMatches);
+			
+			foreach( $ImagePathMatches as $Filename ) {
+				$Image = $app->PrepareImage( $Filename );
 				
 				$ImageObject = (object) array(
 					"mime"		=> $Image->mime,
 					"size"		=> $Image->filesize,	
 					"storage"	=> "FSStorage",
-					"uri"		=> $FileName,
-					"filename"	=> $FileName,
+					"uri"		=> $Image->filename,
+					"filename"	=> $Image->filename,
 					"width"		=> $Image->width,
 					"height"	=> $Image->height,
 					"alt"		=> "",
@@ -210,8 +256,9 @@ require_once __DIR__.'/silex.phar';
 				if( !in_array( $Image->filename, $app->GetProductImageNamesById( $Product['id'] ) ) ) {
 					$app->addImageToMetaTable($ImageMeta);
 				}
-			}
-		}
+			}			
+			
+		};
 	});
 
 
